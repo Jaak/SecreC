@@ -11,6 +11,7 @@ import Language.Boogie.Position
 import Language.Boogie.BasicBlocks
 import Language.Boogie.Analysis.BlockGraph
 import Language.Boogie.Analysis.Leakage
+import Language.Boogie.Transformation.Simplify
 
 import Data.Set (Set (..))
 import qualified Data.Set as Set
@@ -508,7 +509,7 @@ shadowBareExpression opts m@(isDualE -> False) (Quantified o alphas args trggs e
         addVariable v
         addExemption v
     mapM_ add args
-    trggs' <- concatMapM (shadowQTriggerAttribute opts False) trggs
+    trggs' <- concatMapM (shadowQTriggerAttribute opts False (map fst args)) trggs
     e' <- shadowExpression opts m e
     return $ Quantified o alphas args trggs' e'
 shadowBareExpression opts DualE (Quantified o alphas args trggs e) = withExemptions $ do
@@ -523,23 +524,21 @@ shadowBareExpression opts DualE (Quantified o alphas args trggs e) = withExempti
             addExemption v
             return [(v,t)]
     args' <- concatMapM add args
-    trggs' <- concatMapM (shadowQTriggerAttribute opts True) trggs
+    trggs' <- concatMapM (shadowQTriggerAttribute opts True (map fst args)) trggs
     e' <- shadowExpression opts DualE e
     return $ Quantified o alphas args' trggs' e'
 shadowBareExpression opts m e = error $ show $ text "expression" <+> pretty e <+> text "not supported in mode" <+> text (show m)
 
-shadowQTriggerAttribute :: MonadIO m => Options -> Bool -> QTriggerAttribute -> ShadowM m [QTriggerAttribute]
-shadowQTriggerAttribute opts True t@(Left trggs) = do
+shadowQTriggerAttribute :: MonadIO m => Options -> Bool -> [Id] -> QTriggerAttribute -> ShadowM m [QTriggerAttribute]
+shadowQTriggerAttribute opts True vars t@(Left trggs) = do
     let sha e = if hasLeakageAnn opts e
-                    then liftM (:[]) (shadowExpression opts DualE e)
-                    else liftM (\e' -> [e,e']) (shadowExpression opts ShadowE e)
-    t' <- liftM Left $ concatMapM sha trggs
-    return [t']
-shadowQTriggerAttribute opts False t@(Left trggs) = do
-    let sha e = liftM (:[]) (shadowExpression opts ShadowE e)
-    t' <- liftM Left $ concatMapM sha trggs
-    return [t']
-shadowQTriggerAttribute opts doDual t@(Right att) = do
+                    then liftM (:[]) (shadowExpression opts DualE $ removeLeakageAnns opts e)
+                    else liftM (\e' -> [e,e']) (shadowExpression opts ShadowE $ removeLeakageAnns opts e)
+    liftM (maybe [] ((:[]) . Left) . cleanTrigger (Just vars)) $ concatMapM sha trggs
+shadowQTriggerAttribute opts False vars t@(Left trggs) = do
+    let sha e = liftM (:[]) (shadowExpression opts ShadowE $ removeLeakageAnns opts e)
+    liftM (maybe [] ((:[]) . Left) . cleanTrigger (Just vars)) $ concatMapM sha trggs
+shadowQTriggerAttribute opts doDual vars t@(Right att) = do
     atts <- (shadowAttribute opts doDual) att
     return $ map Right atts
 
@@ -648,15 +647,17 @@ shadowAttribute opts doDual (Attribute tag vals) = do
   where
     shadowAttrVal :: MonadIO m => Options -> Bool -> AttrValue -> ShadowM m [AttrValue]
     shadowAttrVal opts False v@(EAttr e) = do
-        v' <- liftM EAttr $ shadowExpression opts ShadowE e
-        return [v']
+        v' <- liftM EAttr $ shadowExpression opts ShadowE $ removeLeakageAnns opts e
+        return $ cleanAttributes Nothing [v']
     shadowAttrVal opts True v@(EAttr e) = if hasLeakageAnn opts e
         then do
-            v' <- liftM EAttr $ shadowExpression opts DualE e
-            return [v']
+            v' <- liftM EAttr $ shadowExpression opts DualE $ removeLeakageAnns opts e
+            return $ cleanAttributes Nothing [v']
         else do
-            v' <- liftM EAttr $ shadowExpression opts ShadowE e
-            if doDual then return [removeLeakageAnns opts v,v'] else return [v']
+            v' <- liftM EAttr $ shadowExpression opts ShadowE $ removeLeakageAnns opts e
+            if doDual
+                then return $ cleanAttributes Nothing [removeLeakageAnns opts v,v']
+                else return $ cleanAttributes Nothing [v']
     shadowAttrVal opts _ (SAttr s) = return [SAttr s]
 
 shadowWildcardExpression :: MonadIO m => Options -> ShadowEMode -> WildcardExpression -> ShadowM m WildcardExpression

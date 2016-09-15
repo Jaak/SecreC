@@ -9,11 +9,14 @@ import Language.Boogie.Position
 import Language.Boogie.PrettyAST
 import Language.Boogie.Pretty
 import Language.Boogie.BasicBlocks
+import Language.Boogie.Analysis.Leakage
 
 import Control.Monad.Identity
 
 import Data.Maybe
 import Data.Monoid
+import Data.Generics
+import qualified Data.Set as Set
 
 runSimplify :: Simplify a => a -> a
 runSimplify x = runIdentity (simplifyId x)
@@ -195,6 +198,27 @@ instance Simplify BareStatement where
     simplify (Predicate atts spec) = liftM (fmap (Predicate atts)) $ simplify spec
     simplify s = return $ Just s
 
+cleanAttributes :: Maybe [Id] -> [AttrValue] -> [AttrValue]
+cleanAttributes vars = concatMap (cleanAttribute vars)
+
+cleanTriggers :: Maybe [Id] -> [Trigger] -> [Trigger]
+cleanTriggers vars = catMaybes . map (cleanTrigger vars)
+
+cleanAttribute :: Maybe [Id] -> AttrValue -> [AttrValue]
+cleanAttribute vars (SAttr x) = [SAttr x]
+cleanAttribute vars (EAttr x) = map EAttr $ cleanExpression x
+
+cleanTrigger :: Maybe [Id] -> Trigger -> Maybe Trigger
+cleanTrigger vars t = let t' = concatMap cleanExpression t in case vars of
+    Nothing -> Just t'
+    Just ids -> if Set.isSubsetOf (Set.fromList ids) (fvs t') then Just t' else Nothing
+
+cleanExpression :: Expression -> [Expression]
+cleanExpression (Pos p e) = cleanBareExpression p e
+
+cleanBareExpression :: SourcePos -> BareExpression -> [Expression]
+cleanBareExpression p (BinaryExpression _ e1 e2) = cleanExpression e1 ++ cleanExpression e2
+cleanBareExpression p e = [Pos p e]
 
 
 
